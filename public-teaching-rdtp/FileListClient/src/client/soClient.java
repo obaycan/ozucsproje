@@ -139,7 +139,6 @@ public class soClient {
         public long invalidRangeCount = 0; // Counter for invalid range responses
         public long largePacketCount = 0;
         public long dataMismatchCount = 0;
-        
 
         public ConnectionStats(String name) {
             this.name = name;
@@ -204,10 +203,11 @@ public class soClient {
      * Uses GET_FILE_LIST request type to get available files.
      * Implements timeout and error handling.
      */
-    public void getFileList(String ip, int port) throws IOException {
+    public void getFileList(String ip1, int port1, String ip2, int port2) throws IOException {
         try {
-            InetAddress IPAddress = InetAddress.getByName(ip);
-
+            InetAddress IPAddress1 = InetAddress.getByName(ip1);
+            InetAddress IPAddress2 = InetAddress.getByName(ip2);
+    
             // GET_FILE_LIST request
             RequestType req = new RequestType(
                     RequestType.REQUEST_TYPES.GET_FILE_LIST,
@@ -215,30 +215,70 @@ public class soClient {
                     0,
                     0,
                     null);
-            byte[] sendData = req.toByteArray();
-            DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, IPAddress, port);
-            socket1.send(sendPacket);
-
+            byte[] sendData1 = req.toByteArray();
+            byte[] sendData2 = req.toByteArray();
+            DatagramPacket sendPacket1 = new DatagramPacket(sendData1, sendData1.length, IPAddress1, port1);
+            DatagramPacket sendPacket2 = new DatagramPacket(sendData2, sendData2.length, IPAddress2, port2);
+    
+            long sendTime1 = System.nanoTime();
+            socket1.send(sendPacket1);
+            long sendTime2 = System.nanoTime();
+            socket2.send(sendPacket2);
+    
             // Set timeout for receive
             socket1.setSoTimeout(2000); // 2 second timeout
-
-            // Get response
-            byte[] receiveData = new byte[ResponseType.MAX_RESPONSE_SIZE];
-            DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-            socket1.receive(receivePacket);
-
-            FileListResponseType response = new FileListResponseType(receivePacket.getData());
-            fileListMap.clear();
-
-            System.out.println("\n--- File List from Server ---");
-            for (FileDescriptor fd : response.getFileDescriptors()) {
-                System.out.println(fd.getFile_id() + ". " + fd.getFile_name());
-                fileListMap.put(fd.getFile_id(), fd.getFile_name());
+            socket2.setSoTimeout(2000); // 2 second timeout
+    
+            // Get response from socket1
+            byte[] receiveData1 = new byte[ResponseType.MAX_RESPONSE_SIZE];
+            DatagramPacket receivePacket1 = new DatagramPacket(receiveData1, receiveData1.length);
+            FileListResponseType response1 = null;
+            try {
+                socket1.receive(receivePacket1);
+                response1 = new FileListResponseType(receivePacket1.getData());
+                stats1.addReceived((System.nanoTime() - sendTime1) / 1_000_000); // RTT in ms
+            } catch (SocketTimeoutException e) {
+                System.err.println("Timeout on socket1 while getting file list.");
+                stats1.addTimeout();
             }
-            System.out.println("-----------------------------\n");
-        } catch (SocketTimeoutException e) {
-            System.err.println("Server timeout while getting file list. Retrying...");
-            throw new IOException("Server timeout");
+    
+            // Get response from socket2
+            byte[] receiveData2 = new byte[ResponseType.MAX_RESPONSE_SIZE];
+            DatagramPacket receivePacket2 = new DatagramPacket(receiveData2, receiveData2.length);
+            FileListResponseType response2 = null;
+            try {
+                socket2.receive(receivePacket2);
+                response2 = new FileListResponseType(receivePacket2.getData());
+                stats2.addReceived((System.nanoTime() - sendTime2) / 1_000_000); // RTT in ms
+            } catch (SocketTimeoutException e) {
+                System.err.println("Timeout on socket2 while getting file list.");
+                stats2.addTimeout();
+            }
+    
+            // Compare loss rates and choose the better one
+            double lossRate1 = stats1.getLossRate();
+            double lossRate2 = stats2.getLossRate();
+    
+            if ((response1 != null && response2 == null) || (response1 != null && lossRate1 <= lossRate2)) {
+                fileListMap.clear();
+                System.out.println("\n--- File List from Server (Socket 1) ---");
+                for (FileDescriptor fd : response1.getFileDescriptors()) {
+                    System.out.println(fd.getFile_id() + ". " + fd.getFile_name());
+                    fileListMap.put(fd.getFile_id(), fd.getFile_name());
+                }
+                System.out.println("-----------------------------\n");
+            } else if (response2 != null) {
+                fileListMap.clear();
+                System.out.println("\n--- File List from Server (Socket 2) ---");
+                for (FileDescriptor fd : response2.getFileDescriptors()) {
+                    System.out.println(fd.getFile_id() + ". " + fd.getFile_name());
+                    fileListMap.put(fd.getFile_id(), fd.getFile_name());
+                }
+                System.out.println("-----------------------------\n");
+            } else {
+                System.err.println("Failed to get file list from both connections.");
+            }
+    
         } catch (Exception e) {
             System.err.println("Error while getting file list: " + e.getMessage());
             throw new IOException("File list error: " + e.getMessage());
@@ -249,31 +289,73 @@ public class soClient {
      * Gets file size from server using GET_FILE_SIZE request.
      * Returns -1 if request fails.
      */
-    public long getFileSize(String ip, int port, int fileId) throws IOException {
-        InetAddress IPAddress = InetAddress.getByName(ip);
+    public long getFileSize(String ip1, int port1, String ip2, int port2, int fileId) throws IOException {
+    InetAddress IPAddress1 = InetAddress.getByName(ip1);
+    InetAddress IPAddress2 = InetAddress.getByName(ip2);
 
-        RequestType req = new RequestType(
-                RequestType.REQUEST_TYPES.GET_FILE_SIZE,
-                fileId,
-                0,
-                0,
-                null);
-        byte[] sendData = req.toByteArray();
-        DatagramPacket sendPacket = new DatagramPacket(sendData, sendData.length, IPAddress, port);
-        socket1.send(sendPacket);
+    RequestType req1 = new RequestType(
+            RequestType.REQUEST_TYPES.GET_FILE_SIZE,
+            fileId,
+            0,
+            0,
+            null);
+    byte[] sendData1 = req1.toByteArray();
+    DatagramPacket sendPacket1 = new DatagramPacket(sendData1, sendData1.length, IPAddress1, port1);
+    long sendTime1 = System.nanoTime();
+    socket1.send(sendPacket1);
 
-        byte[] receiveData = new byte[ResponseType.MAX_RESPONSE_SIZE];
-        DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
-        socket1.receive(receivePacket);
+    RequestType req2 = new RequestType(
+            RequestType.REQUEST_TYPES.GET_FILE_SIZE,
+            fileId,
+            0,
+            0,
+            null);
+    byte[] sendData2 = req2.toByteArray();
+    DatagramPacket sendPacket2 = new DatagramPacket(sendData2, sendData2.length, IPAddress2, port2);
+    long sendTime2 = System.nanoTime();
+    socket2.send(sendPacket2);
 
-        FileSizeResponseType response = new FileSizeResponseType(receivePacket.getData());
-        if (response.getResponseType() == ResponseType.RESPONSE_TYPES.GET_FILE_SIZE_SUCCESS) {
-            return response.getFileSize();
-        } else {
-            System.err.println("GET_FILE_SIZE failed, response: " + response.getResponseType());
-            return -1;
+    byte[] receiveData1 = new byte[ResponseType.MAX_RESPONSE_SIZE];
+    DatagramPacket receivePacket1 = new DatagramPacket(receiveData1, receiveData1.length);
+    byte[] receiveData2 = new byte[ResponseType.MAX_RESPONSE_SIZE];
+    DatagramPacket receivePacket2 = new DatagramPacket(receiveData2, receiveData2.length);
+    FileSizeResponseType response1 = null;
+    FileSizeResponseType response2 = null;
+
+    try {
+        socket1.receive(receivePacket1);
+        response1 = new FileSizeResponseType(receivePacket1.getData());
+        stats1.addReceived((System.nanoTime() - sendTime1) / 1_000_000); // RTT in ms
+    } catch (SocketTimeoutException e) {
+        System.err.println("Timeout on socket1 while getting file size.");
+        stats1.addTimeout();
+    }
+
+    try {
+        socket2.receive(receivePacket2);
+        response2 = new FileSizeResponseType(receivePacket2.getData());
+        stats2.addReceived((System.nanoTime() - sendTime2) / 1_000_000); // RTT in ms
+    } catch (SocketTimeoutException e) {
+        System.err.println("Timeout on socket2 while getting file size.");
+        stats2.addTimeout();
+    }
+
+    double lossRate1 = stats1.getLossRate();
+    double lossRate2 = stats2.getLossRate();
+
+    if ((response1 != null && response2 == null) || (response1 != null && lossRate1 <= lossRate2)) {
+        if (response1.getResponseType() == ResponseType.RESPONSE_TYPES.GET_FILE_SIZE_SUCCESS) {
+            return response1.getFileSize();
+        }
+    } else if (response2 != null) {
+        if (response2.getResponseType() == ResponseType.RESPONSE_TYPES.GET_FILE_SIZE_SUCCESS) {
+            return response2.getFileSize();
         }
     }
+
+    System.err.println("GET_FILE_SIZE failed for both connections.");
+    return -1; // If neither connection succeeds
+}
 
     /**
      * Downloads a single chunk and copies it to aggregator.
@@ -767,94 +849,94 @@ public class soClient {
      * @throws Exception if unrecoverable error occurs
      */
     public static void main(String[] args) throws Exception {
-        if (args.length < 2) {
-            System.err.println("Usage: java soClient <server_IP1>:<port1> <server_IP2>:<port2>");
-            return;
-        }
+    if (args.length < 2) {
+        System.err.println("Usage: java soClient <server_IP1>:<port1> <server_IP2>:<port2>");
+        return;
+    }
 
-        String[] arr1 = args[0].split(":");
-        String ip1 = arr1[0];
-        int port1 = Integer.parseInt(arr1[1]);
+    String[] arr1 = args[0].split(":");
+    String ip1 = arr1[0];
+    int port1 = Integer.parseInt(arr1[1]);
 
-        String[] arr2 = args[1].split(":");
-        String ip2 = arr2[0];
-        int port2 = Integer.parseInt(arr2[1]);
+    String[] arr2 = args[1].split(":");
+    String ip2 = arr2[0];
+    int port2 = Integer.parseInt(arr2[1]);
 
-        soClient client = new soClient();
+    soClient client = new soClient();
 
-        Scanner scanner = new Scanner(System.in);
+    Scanner scanner = new Scanner(System.in);
 
-        // Main program loop
-        while (true) {
-            int retryCount = 0;
-            final int MAX_RETRIES = 3;
-            boolean fileListSuccess = false;
+    // Main program loop
+    while (true) {
+        int retryCount = 0;
+        final int MAX_RETRIES = 3;
+        boolean fileListSuccess = false;
 
-            while (retryCount < MAX_RETRIES && !fileListSuccess) {
+        while (retryCount < MAX_RETRIES && !fileListSuccess) {
+            try {
+                // Get and show file list from server each time
+                client.getFileList(ip1, port1, ip2, port2);
+                fileListSuccess = true;
+            } catch (IOException e) {
+                System.err.println("Attempt " + (retryCount + 1) + "/" + MAX_RETRIES +
+                        " failed: " + e.getMessage());
+                retryCount++;
+                if (retryCount >= MAX_RETRIES) {
+                    System.err.println("Could not get file list after " + MAX_RETRIES +
+                            " attempts. Please check server connection.");
+                    continue;
+                }
                 try {
-                    // Get and show file list from server each time
-                    client.getFileList(ip1, port1);
-                    fileListSuccess = true;
-                } catch (IOException e) {
-                    System.err.println("Attempt " + (retryCount + 1) + "/" + MAX_RETRIES +
-                            " failed: " + e.getMessage());
-                    retryCount++;
-                    if (retryCount >= MAX_RETRIES) {
-                        System.err.println("Could not get file list after " + MAX_RETRIES +
-                                " attempts. Please check server connection.");
-                        continue;
-                    }
-                    try {
-                        Thread.sleep(1000); // Wait 1 second before retry
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                    Thread.sleep(1000); // Wait 1 second before retry
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
-
-            System.out.print("Enter a fileId to download (0 to exit): ");
-            String input = scanner.nextLine().trim();
-            if (input.equalsIgnoreCase("0")) {
-                System.out.println("Exiting program...");
-                break;
-            }
-
-            int fileId;
-            try {
-                fileId = Integer.parseInt(input);
-            } catch (NumberFormatException e) {
-                System.out.println("Invalid input. Please enter a valid fileId or 0.");
-                continue;
-            }
-
-            String fileName = client.fileListMap.get(fileId);
-            if (fileName == null) {
-                System.err.println("No file found for fileId: " + fileId);
-                // Continue loop
-                continue;
-            }
-
-            // Get file size
-            long fileSize = client.getFileSize(ip1, port1, fileId);
-            if (fileSize <= 0) {
-                System.err.println("Could not get valid file size for fileId=" + fileId);
-                continue;
-            }
-
-            System.out.printf("**File %s has been selected. Getting the size information...**\n", fileName);
-            System.out.printf("**File %s is %d bytes. Starting to download...**\n", fileName, fileSize);
-
-            // Start download
-            boolean success = client.downloadFile(ip1, port1, ip2, port2, fileId, fileSize, fileName);
-            if (!success) {
-                System.err.println("Download failed or was interrupted. Let's continue.\n");
-            } else {
-                System.out.println("Download completed. You can choose another file...\n");
-            }
         }
 
-        scanner.close();
-        System.out.println("Program terminated.");
+        System.out.print("Enter a fileId to download (0 to exit): ");
+        String input = scanner.nextLine().trim();
+        if (input.equalsIgnoreCase("0")) {
+            System.out.println("Exiting program...");
+            break;
+        }
+
+        int fileId;
+        try {
+            fileId = Integer.parseInt(input);
+        } catch (NumberFormatException e) {
+            System.out.println("Invalid input. Please enter a valid fileId or 0.");
+            continue;
+        }
+
+        String fileName = client.fileListMap.get(fileId);
+        if (fileName == null) {
+            System.err.println("No file found for fileId: " + fileId);
+            // Continue loop
+            continue;
+        }
+
+        // Get file size
+        long fileSize = client.getFileSize(ip1, port1, ip2, port2, fileId);
+        if (fileSize <= 0) {
+            System.err.println("Could not get valid file size for fileId=" + fileId);
+            continue;
+        }
+
+        System.out.printf("**File %s has been selected. Getting the size information...**\n", fileName);
+        System.out.printf("**File %s is %d bytes. Starting to download...**\n", fileName, fileSize);
+
+        // Start download
+        boolean success = client.downloadFile(ip1, port1, ip2, port2, fileId, fileSize, fileName);
+        if (!success) {
+            System.err.println("Download failed or was interrupted. Let's continue.\n");
+        } else {
+            System.out.println("Download completed. You can choose another file...\n");
+        }
     }
+
+    scanner.close();
+    System.out.println("Program terminated.");
+}
 }
