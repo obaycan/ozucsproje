@@ -1,5 +1,5 @@
 /**
-     * Downloads a single chunk using same interface over two different ports and writes it to the aggregator buffer.
+     * Downloads a single chunk and writes it to the aggregator buffer.
      * Implements robust error handling and data validation.
      * 
      * Key Features:
